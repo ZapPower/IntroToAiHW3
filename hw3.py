@@ -1,6 +1,5 @@
 from scipy.linalg import eigh
 import numpy as np
-import numpy.typing as npt
 import matplotlib.pyplot as plt
 import math
 import random
@@ -15,12 +14,10 @@ def load_and_center_dataset(filename):
     Returns:
         numpy.ndarray: Centered dataset (n x d matrix)
     """
-    # Your implementation goes here!
+    dataset = np.load(filename).astype(np.float64)
 
-    dataset = np.array(np.load(filename))
-    centered_data: npt.NDArray[np.float64] = dataset - np.mean(dataset)
-    
-    return centered_data
+    # Subtract the feature-wise mean so each column (pixel) has mean zero.
+    return dataset - np.mean(dataset, axis=0)
 
 def get_covariance(dataset):
     """
@@ -32,8 +29,11 @@ def get_covariance(dataset):
     Returns:
         numpy.ndarray: Covariance matrix (d x d matrix)
     """
+    x = np.asarray(dataset, dtype=np.float64)
+    n = x.shape[0]
 
-    return np.cov(dataset)
+    # S = 1/(n-1) * sum_i x_i x_i^T = 1/(n-1) * X^T X for row-wise data.
+    return np.dot(np.transpose(x), x) / (n - 1)
 
 def get_eig(S, k):
     """
@@ -47,11 +47,16 @@ def get_eig(S, k):
         tuple: (Lambda, U) where Lambda is diagonal matrix of eigenvalues
                and U is matrix of corresponding eigenvectors as columns
     """
-    # Your implementation goes here!
-    eigenvalues, eigenvectors = np.linalg.eigh(S)
+    d = S.shape[0]
 
-    diagonal_eigenvalues = np.diag(eigenvalues)
-    return (diagonal_eigenvalues, eigenvectors)
+    # eigh returns eigenvalues in ascending order; grab the top k.
+    eigenvalues, eigenvectors = eigh(S, subset_by_index=[d - k, d - 1])
+
+    # Flip to descending order, keeping eigenvectors in matching columns.
+    eigenvalues = eigenvalues[::-1]
+    eigenvectors = eigenvectors[:, ::-1]
+
+    return np.diag(eigenvalues), eigenvectors
 
 def get_eig_prop(S, prop):
     """
@@ -65,8 +70,20 @@ def get_eig_prop(S, prop):
         tuple: (Lambda, U) where Lambda is diagonal matrix of eigenvalues
                and U is matrix of corresponding eigenvectors as columns
     """
-    # Your implementation goes here!
-    raise NotImplementedError
+    # The total variance is the sum of all eigenvalues, i.e. the trace of S.
+    total_variance = np.trace(S)
+
+    # subset_by_value uses the half-open interval (a, b], so this keeps every
+    # eigenvalue explaining strictly more than prop of the variance.
+    eigenvalues, eigenvectors = eigh(
+        S, subset_by_value=[prop * total_variance, np.inf]
+    )
+
+    # Flip to descending order, keeping eigenvectors in matching columns.
+    eigenvalues = eigenvalues[::-1]
+    eigenvectors = eigenvectors[:, ::-1]
+
+    return np.diag(eigenvalues), eigenvectors
 
 def project_and_reconstruct_image(image, U):
     """
@@ -79,8 +96,13 @@ def project_and_reconstruct_image(image, U):
     Returns:
         numpy.ndarray: Reconstructed image as flattened d x 1 vector
     """
-    # Your implementation goes here!
-    raise NotImplementedError
+    x = np.asarray(image, dtype=np.float64).reshape(-1)
+
+    # alpha = U^T x is the m-dimensional projection ("score").
+    alpha = np.dot(np.transpose(U), x)
+
+    # x_pca = U alpha brings it back to the original d-dimensional space.
+    return np.dot(U, alpha)
 
 def project_reconstruct_with_gaussian_noise(image, U, sigma=0.1, seed=0):
     """
@@ -94,8 +116,15 @@ def project_reconstruct_with_gaussian_noise(image, U, sigma=0.1, seed=0):
     Returns:        
         numpy.ndarray: Reconstructed image with noise as flattened d x 1 vector
     """
-    # Your implementation goes here!
-    raise NotImplementedError
+    x = np.asarray(image, dtype=np.float64).reshape(-1)
+
+    alpha = np.dot(np.transpose(U), x)
+
+    # Perturb the PCA coefficients with i.i.d. noise from N(0, sigma^2).
+    rng = np.random.default_rng(seed)
+    noisy_alpha = alpha + rng.normal(loc=0.0, scale=sigma, size=alpha.shape)
+
+    return np.dot(U, noisy_alpha)
 
 def display_image(im_orig_fullres, im_orig, im_reconstructed):
     """
@@ -114,7 +143,23 @@ def display_image(im_orig_fullres, im_orig, im_reconstructed):
     fig, (ax1, ax2, ax3) = plt.subplots(figsize=(9,3), ncols=3)
     fig.tight_layout()
 
-    # Your implementation goes here!
+    # Reshape the flattened vectors back into images.
+    fullres = np.asarray(im_orig_fullres).reshape(218, 178, 3)
+    orig = np.asarray(im_orig, dtype=np.float64).reshape(60, 50)
+    reconstructed = np.asarray(im_reconstructed, dtype=np.float64).reshape(60, 50)
+
+    ax1.set_title('Original High Res')
+    ax2.set_title('Original')
+    ax3.set_title('Reconstructed')
+
+    ax1.imshow(fullres, aspect='equal')
+    im2 = ax2.imshow(orig, aspect='equal', cmap='gray')
+    im3 = ax3.imshow(reconstructed, aspect='equal', cmap='gray')
+
+    # Colorbars on the right of the two low-resolution grayscale images.
+    fig.colorbar(im2, ax=ax2, location='right')
+    fig.colorbar(im3, ax=ax3, location='right')
+
     # Note: Do NOT include plt.show() in your implementation - it will be called separately for testing
 
     return fig, ax1, ax2, ax3
@@ -176,8 +221,22 @@ class NGramCharLM:
         Note: Context is always the last (n-1) characters before current position.
           For positions near the beginning, context may be shorter than (n-1).
         """
-        # Your implementation goes here!
-        raise NotImplementedError
+        self.counts = {}
+        self.vocab = set()
+
+        for i in range(len(text)):
+            ch = text[i]
+
+            # Context is the (up to) n-1 characters immediately before position i.
+            ctx = text[max(0, i - (self.n - 1)):i]
+
+            self.vocab.add(ch)
+
+            ctx_counts = self.counts.setdefault(ctx, {})
+            ctx_counts[ch] = ctx_counts.get(ch, 0) + 1
+
+        self.trained = True
+        return self
     
     def _probs_for_context(self, context: str):
         """
@@ -189,8 +248,22 @@ class NGramCharLM:
         Returns:
             dict[str, float]: Dictionary mapping characters to probabilities
         """
-        # Your implementation goes here!
-        raise NotImplementedError
+        # Only the last n-1 characters matter (for n=1 the context is always empty).
+        ctx = context[-(self.n - 1):] if self.n > 1 else ""
+
+        ctx_counts = self.counts.get(ctx)
+        total = sum(ctx_counts.values()) if ctx_counts else 0
+
+        # Unseen (or empty) context: fall back to a uniform distribution so that
+        # generation stays well-defined.
+        if total == 0:
+            if not self.vocab:
+                return {}
+            uniform = 1.0 / len(self.vocab)
+            return {c: uniform for c in self.vocab}
+
+        # Every vocabulary character is included; unseen ones get probability 0.
+        return {c: ctx_counts.get(c, 0) / total for c in self.vocab}
     
     def prob(self, s: str) -> float:
         """
